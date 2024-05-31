@@ -15,19 +15,6 @@ create table profesores (
 	profesion varchar(50) not null
 );
 -----------------------------------------------------------------------------
-create table libros (
-	isbn integer primary key check (isbn > 0),
-	titulo varchar(50) not null,
-	edic integer check (edic > 0) not null,
-	edit varchar(50) not null
-);
------------------------------------------------------------------------------
-create table autores (
-	id_a integer primary key check (id_a > 0),
-	nom_autor varchar(70) not null,
-	nacionalidad varchar(50) not null -- se entiende como país de nacimiento
-);
------------------------------------------------------------------------------
 create table carreras (
 	id_carr integer primary key check (id_carr > 0),
 	nom_carr varchar(50) not null,
@@ -43,21 +30,6 @@ create table {ESQUEMA}.estudiantes (
 	tel_e bigint check (tel_e > 0),
 	fech_nac date not null,
 	id_carr integer references carreras (id_carr)
-);
------------------------------------------------------------------------------
-create table escribe (
-	isbn integer,
-	id_a integer,
-	foreign key (isbn) references libros (isbn),
-	foreign key (id_a) references autores (id_a),
-	primary key (isbn, id_a)
-);
------------------------------------------------------------------------------
-create table ejemplares (
-	num_ej integer check (num_ej > 0),
-	isbn integer,
-	foreign key (isbn) references libros (isbn),
-	primary key (num_ej, isbn)	
 );
 -----------------------------------------------------------------------------
 create table imparte (
@@ -82,16 +54,6 @@ create table {ESQUEMA}.inscribe (
 	primary key (cod_e, cod_a, id_p, grupo)	
 );
 -----------------------------------------------------------------------------
-create table presta (
-	cod_es bigint,
-	isbn integer,
-	num_ej integer,
-	fech_p date,
-	fech_d date,
-	foreign key (isbn, num_ej) references ejemplares (isbn, num_ej),
-	primary key (cod_e, isbn, num_ej, fech_p)
-);
------------------------------------------------------------------------------
 create table referencia (
 	cod_a integer references asignaturas (cod_a),
 	isbn integer references libros (isbn),
@@ -107,59 +69,72 @@ create table referencia (
 
 -- COMO EJEMPLO TENEMOS:
 
--- psql -U postgres -d database_Ingenieria -h fac-ingenieriaa.c7u24qsquqpy.us-east-2.rds.amazonaws.com -p 5432 
--- -c "\copy ingenieria_electronica.estudiantes (cod_e, nom_e, dir_e, tel_e, fech_nac, id_carr)  
--- FROM 'C:\INGENIERIA\EstudiantesElectonica.csv' DELIMITER ',' CSV HEADER NULL '';"
+-- psql -U postgres -d database_Ciencias -h fac-ingenieriaa.c7u24qsquqpy.us-east-2.rds.amazonaws.com -p 5432 
+-- -c "\copy licenciatura_biologia.estudiantes (cod_e, nom_e, dir_e, tel_e, fech_nac, id_carr)  
+-- FROM 'C:\INGENIERIA\EstudiantesBiologia.csv' DELIMITER ',' CSV HEADER NULL '';"
 ---------------------------------------------------------------------------------------------------------------
 
 ---------------------------------------------------------------------------------------------------------------
 -- VISTAS PREDEFINIDAS:
--- SE CREAN VISTAS PREDEFINIDAS TALES COMO estudiantes_ingenieria y inscribe_estudiantes PARA VISUALIZAR LOS
+-- SE CREAN VISTAS PREDEFINIDAS TALES COMO estudiantes_ciencias y inscribe_estudiantes PARA VISUALIZAR LOS
 -- ESTUDIANTES DE TODAS LAS CARRERAS DEBIDO A QUE ESTAN EN DIFERENTES ESQUEMAS.
 ---------------------------------------------------------------------------------------------------------------
 
+CREATE VIEW inscribe_estudiantes AS
+SELECT * from archivistica_gestion.inscribe
+UNION ALL
+SELECT * from comunicacion_social.inscribe
+UNION ALL
+SELECT * from licenciatura_biologia.inscribe
+UNION ALL
+SELECT * from licenciatura_ciencias.inscribe
+UNION ALL
+SELECT * from licenciatura_educacion.inscribe
+
+CREATE VIEW estudiantes_ciencias AS
+SELECT * from archivistica_gestion.estudiantes
+UNION ALL
+SELECT * from comunicacion_social.estudiantes
+UNION ALL
+SELECT * from licenciatura_biologia.estudiantes
+UNION ALL
+SELECT * from licenciatura_ciencias.estudiantes
+UNION ALL
+SELECT * from licenciatura_educacion.estudiantes
+
 ---------------------------------------------------------------------------------------------------------------
--- FUNCIONES PREDEFINIDAS:
--- SE CREA UNA FUNCION PREDEFINADA PARA LA TABLA PRESTA, DEBIDO A QUE ESTA DEBE VALIDAR LA INFORMACION DE LOS
--- ESTUDIANTES DE TODAS LAS FACULTADES, POR LO QUE SIEMPRE QUE SE INGRESA LA INFORMACION SE VERFICA QUE EL
--- ESTUDIANTE EXISTA. SIMULANDO UNA REFERENCIA ENTRE SERVIDORES, O EN ESTE CASO INSTANCIAS DE AWS.
+-- FUNCIONES PREDEFINIDAS: SE CREA LA FUNCION SEND_TO_PRESTAMOS DEBIDO A QUE LA TABLA PRESTA SE ENCUENTRA
+-- EN LA FACULTAD DE INGENIERIA
 ---------------------------------------------------------------------------------------------------------------
-CREATE OR REPLACE FUNCTION validate_estudiante() RETURNS TRIGGER AS $$
-BEGIN    
-    PERFORM ei.cod_e FROM estudiantes_ingenieria ei WHERE ei.cod_e = NEW.cod_es;
-    IF FOUND THEN
-	    RAISE NOTICE 'El estudiante con cod_e % pertenece a la facultad de Ingeniería', NEW.cod_es;
-        RETURN NEW;
-    END IF;
 
-    PERFORM cod_e FROM dblink(
-        'dbname=database_Artes host=fac-artes.c7u24qsquqpy.us-east-2.rds.amazonaws.com port=5432 user=postgres password=postgres',
-        format('SELECT cod_e FROM Estudiantes_Artes ea WHERE ea.cod_e = %L', NEW.cod_es)
-    ) AS t2(cod_e BIGINT);
-    IF FOUND THEN
-		RAISE NOTICE 'El estudiante con cod_e % pertenece a la facultad de Artes', NEW.cod_es;
-        RETURN NEW;
-    END IF;
+CREATE OR REPLACE FUNCTION send_to_presta(
+    p_cod_e BIGINT,
+    p_isbn BIGINT,
+    p_num_ej INTEGER,
+    p_fech_p DATE,
+    p_fech_d DATE
+)
+RETURNS VOID AS $$
+DECLARE
+    conn_str TEXT;
+BEGIN
+    -- Connection string to the remote database
+    conn_str := 'dbname=database_Ingenieria host=fac-ingenieriaa.c7u24qsquqpy.us-east-2.rds.amazonaws.com port=5432 user=ingresar_ingenieria password=ingresar_ingenieria';
 
-    PERFORM cod_e FROM dblink(
-        'dbname=database_Ciencias host=fac-ciencias.c7u24qsquqpy.us-east-2.rds.amazonaws.com port=5432 user=postgres password=postgres',
-        format('SELECT cod_e FROM Estudiantes_Ciencias ec WHERE ec.cod_e = %L', NEW.cod_es)
-    ) AS t2(cod_e BIGINT);
-    IF FOUND THEN
-		RAISE NOTICE 'El estudiante con cod_e % pertenece a la facultad de Ciencias', NEW.cod_es;
-        RETURN NEW;
-    END IF;
+    -- Perform the insert using dblink
+    PERFORM dblink(
+        conn_str,
+        format(
+            'INSERT INTO presta (cod_es, isbn, num_ej, fech_p, fech_d) VALUES (%L, %L, %L, %L, %L)',
+            p_cod_e, p_isbn, p_num_ej, p_fech_p, p_fech_d
+        )
+    );
 
-    RAISE EXCEPTION 'El estudiante con cod_e % no existe en ninguna facultad', NEW.cod_es;
-    
-    RETURN NULL;
+EXCEPTION
+    WHEN OTHERS THEN
+        RAISE EXCEPTION 'Error inserting into remote PRESTA table: %', SQLERRM;
 END;
 $$ LANGUAGE plpgsql;
-
-CREATE TRIGGER trigger_validate_estudiante
-BEFORE INSERT OR UPDATE ON public.presta
-FOR EACH ROW EXECUTE FUNCTION validate_estudiante();
-
 
 -- ROL ESTUDIANTE :
 ---------------------------------------------------------------------------------------------------------------
@@ -180,7 +155,7 @@ DECLARE
 BEGIN
     FOR estudiante IN
         SELECT cod_e
-        FROM estudiantes_ingenieria
+        FROM estudiantes_ciencias
     LOOP
         PERFORM addEstudiante(estudiante.cod_e::TEXT);
 	END LOOP;
@@ -199,18 +174,34 @@ SELECT cod_e, nom_e, nom_a, n1, n2, n3,
        COALESCE(n1,0)*0.35 + COALESCE(n2,0)*0.35 + COALESCE(n3,0)*0.3 AS def
 FROM inscribe_Estudiantes 
 NATURAL JOIN asignaturas 
-NATURAL JOIN estudiantes_ingenieria
+NATURAL JOIN estudiantes_ciencias
 WHERE cod_e = current_user::bigint;
 
 GRANT SELECT ON notas TO estudiante;
 
+SELECT send_to_presta(20191001201, 100100100, 1, '2001-11-01', '2002-01-01');
+
 ---------------------------------------------------------------------------------------------------------------
 -- CREAMOS LA VISTA PARA QUE EL ESTUDIANTE VEA LIBROS Y AUTORES : 
 ---------------------------------------------------------------------------------------------------------------
+
 CREATE VIEW libros_autores AS
-SELECT * FROM LIBROS ls
-NATURAL JOIN ESCRIBE
-NATURAL JOIN autores    
+SELECT * 
+FROM dblink('dbname=database_Ingenieria host=fac-ingenieriaa.c7u24qsquqpy.us-east-2.rds.amazonaws.com port=5432 user=ingresar_ingenieria password=ingresar_ingenieria',
+        'SELECT a.id_a, l.isbn, l.edic, l.titulo, l.edit, a.nom_autor, a.nacionalidad
+         FROM libros l 
+         NATURAL JOIN escribe e 
+         NATURAL JOIN autores a'
+    ) AS t(
+        id_a INTEGER,
+        isbn INTEGER,
+        edic INTEGER,
+        titulo VARCHAR,
+        edit VARCHAR,
+        nom_autor VARCHAR,
+        nacionalidad VARCHAR
+    );
+END;
 
 GRANT SELECT ON libros_autores TO estudiante;
 
@@ -218,11 +209,13 @@ GRANT SELECT ON libros_autores TO estudiante;
 -- CREAMOS LA VISTA PARA QUE EL ESTUDIANTE VEA SUS PRESTAMOS:
 ---------------------------------------------------------------------------------------------------------------
 CREATE VIEW prestamos AS
-SELECT * from presta
+SELECT *
+FROM dblink('dbname=database_Ingenieria host=fac-ingenieriaa.c7u24qsquqpy.us-east-2.rds.amazonaws.com port=5432 user=ingresar_ingenieria password=ingresar_ingenieria',
+'select cod_es, isbn, num_ej, fech_p, fech_d from presta')
+AS t1 (cod_es bigint, isbn integer, num_ej integer, fech_p date, fech_d date)
 WHERE cod_es = current_user::bigint;
 
 GRANT SELECT ON prestamos TO estudiante;
-
 
 -- ROL PROFESOR :
 ---------------------------------------------------------------------------------------------------------------
@@ -260,14 +253,14 @@ SELECT cod_a, nom_a, cod_e, nom_e, n1, n2, n3,
        COALESCE(n1,0)*0.35 + COALESCE(n2,0)*0.35 + COALESCE(n3,0)*0.3 AS def
 FROM inscribe_estudiantes 
 NATURAL JOIN asignaturas 
-NATURAL JOIN estudiantes_ingenieria
+NATURAL JOIN estudiantes_ciencias
 NATURAL JOIN profesores
 WHERE id_p = current_user::integer
 ORDER BY cod_a, cod_e;
 
-GRANT USAGE ON SCHEMA {ESQUEMA} TO profesor;
+GRANT USAGE ON SCHEMA licenciatura_educacion TO profesor;
 GRANT SELECT, UPDATE ON ver_notas_estudiante_profesor TO profesor;
-GRANT UPDATE ON {ESQUEMA}.inscribe TO profesor;
+GRANT UPDATE ON licenciatura_educacion.inscribe TO profesor;
 ---------------------------------------------------------------------------------------------------------------
 -- CREAMOS LA FUNCION PARA QUE EL PROFESOR PUEDA ACTUALIZAR LAS NOTAS:
 ---------------------------------------------------------------------------------------------------------------
@@ -277,7 +270,7 @@ DECLARE
     updated_rows INT := 0;
 BEGIN
 
-    UPDATE ingenieria_catastral.inscribe
+    UPDATE archivistica_gestion.inscribe
     SET n1 = COALESCE(NEW.n1, n1),
         n2 = COALESCE(NEW.n2, n2),
         n3 = COALESCE(NEW.n3, n3)
@@ -289,7 +282,7 @@ BEGIN
         RETURN NEW;
     END IF;
 
-    UPDATE ingenieria_de_sistemas.inscribe
+    UPDATE comunicacion_social.inscribe
     SET n1 = COALESCE(NEW.n1, n1),
         n2 = COALESCE(NEW.n2, n2),
         n3 = COALESCE(NEW.n3, n3)
@@ -301,7 +294,7 @@ BEGIN
         RETURN NEW;
     END IF;
 
-    UPDATE ingenieria_electronica.inscribe
+    UPDATE licenciatura_biologia.inscribe
     SET n1 = COALESCE(NEW.n1, n1),
         n2 = COALESCE(NEW.n2, n2),
         n3 = COALESCE(NEW.n3, n3)
@@ -313,7 +306,7 @@ BEGIN
         RETURN NEW;
     END IF;
 
-    UPDATE ingenieria_electrica.inscribe
+    UPDATE licenciatura_ciencias.inscribe
     SET n1 = COALESCE(NEW.n1, n1),
         n2 = COALESCE(NEW.n2, n2),
         n3 = COALESCE(NEW.n3, n3)
@@ -325,7 +318,7 @@ BEGIN
         RETURN NEW;
     END IF;
 	
-    UPDATE ingenieria_industrial.inscribe
+    UPDATE licenciatura_educacion.inscribe
     SET n1 = COALESCE(NEW.n1, n1),
         n2 = COALESCE(NEW.n2, n2),
         n3 = COALESCE(NEW.n3, n3)
@@ -346,7 +339,7 @@ END;
 $$ LANGUAGE plpgsql;
 
 CREATE TRIGGER Actualizar_Notas_Estudiantes_Trigger
-INSTEAD OF UPDATE ON notasProfe
+INSTEAD OF UPDATE ON ver_notas_estudiante_profesor
 FOR EACH ROW
 EXECUTE FUNCTION Actualizar_Notas_Estudiantes();
 
@@ -367,12 +360,11 @@ GRANT SELECT ON asignaturas_que_dicta TO profesor;
 CREATE VIEW lista_estudiantes AS
 SELECT nom_a, cod_e, nom_e, grupo from inscribe_estudiantes
 NATURAL JOIN asignaturas
-NATURAL JOIN estudiantes_ingenieria
+NATURAL JOIN estudiantes_ciencias
 WHERE id_p = current_user::integer
 ORDER BY nom_a;
 
 GRANT SELECT ON lista_estudiantes TO profesor;
-
 ---------------------------------------------------------------------------------------------------------------
 -- DAMOS PERMISO PARA QUE PUEDA VER LOS LIBROS Y AUTORES ANTERIORMENTE CREADA:
 ---------------------------------------------------------------------------------------------------------------
