@@ -5,7 +5,8 @@ create table asignaturas (
 	cod_a integer primary key check (cod_a > 0),
 	nom_a varchar(50) not null,
 	int_h integer check (int_h > 0) not null,
-	creditos_a integer check (creditos_a > 0) not null
+	creditos_a integer check (creditos_a > 0) not null,
+    cod_carr integer REFERENCES carreras (cod_carr)
 );
 -----------------------------------------------------------------------------
 create table profesores (
@@ -254,7 +255,7 @@ SELECT addProfesorRol();
 ---------------------------------------------------------------------------------------------------------------
 -- CREAMOS LA VISTA PARA QUE EL PROFESOR VEA Y ACTUALICE LAS NOTAS DE CADA ESTUDIANTE:
 ---------------------------------------------------------------------------------------------------------------
-CREATE VIEW notasProfe AS
+CREATE VIEW ver_notas_estudiante_profesor AS
 SELECT cod_a, nom_a, cod_e, nom_e, n1, n2, n3, 
        COALESCE(n1,0)*0.35 + COALESCE(n2,0)*0.35 + COALESCE(n3,0)*0.3 AS def
 FROM inscribe_estudiantes 
@@ -265,7 +266,7 @@ WHERE id_p = current_user::integer
 ORDER BY cod_a, cod_e;
 
 GRANT USAGE ON SCHEMA {ESQUEMA} TO profesor;
-GRANT SELECT, UPDATE ON notasProfe TO profesor;
+GRANT SELECT, UPDATE ON ver_notas_estudiante_profesor TO profesor;
 GRANT UPDATE ON {ESQUEMA}.inscribe TO profesor;
 ---------------------------------------------------------------------------------------------------------------
 -- CREAMOS LA FUNCION PARA QUE EL PROFESOR PUEDA ACTUALIZAR LAS NOTAS:
@@ -420,7 +421,7 @@ CREATE ROLE bibliotecario LOGIN PASSWORD 'bibliotecario';
 
 CREATE VIEW prestamos_bibliotecario AS
 SELECT * FROM presta
-GRANT USAGE ON SCHEMA public TO prestamos_bibliotecario;
+GRANT USAGE ON SCHEMA public TO bibliotecario;
 
 GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE ejemplares TO bibliotecario;
 
@@ -547,6 +548,15 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
+CREATE TABLE IF NOT EXISTS log_table (
+    log_id SERIAL PRIMARY KEY,
+    table_name TEXT,
+    operation TEXT,
+    user_name TEXT,
+    change_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    details JSONB
+);
+
 GRANT USAGE, SELECT ON SEQUENCE log_table_log_id_seq TO "11025";
 GRANT USAGE, SELECT ON SEQUENCE log_table_log_id_seq TO "11003";
 GRANT USAGE, SELECT ON SEQUENCE log_table_log_id_seq TO "11006";
@@ -599,3 +609,97 @@ FOR EACH ROW EXECUTE FUNCTION log_changes();
 CREATE TRIGGER log_changes_inscribe_electrica
 AFTER INSERT OR UPDATE ON ingenieria_electrica.inscribe
 FOR EACH ROW EXECUTE FUNCTION log_changes();
+
+---------------------------------------------------------------------------------------------------------------
+-- DAMOS PERMISO PARA QUE PUEDA VER LIBROS Y AUTORES
+---------------------------------------------------------------------------------------------------------------
+GRANT SELECT ON libros_autores TO estudiante;
+
+---------------------------------------------------------------------------------------------------------------
+-- DAMOS PERMISO PARA QUE PUEDA VER SUS PRESTAMOS
+---------------------------------------------------------------------------------------------------------------
+GRANT SELECT ON prestamos TO estudiante;
+
+---------------------------------------------------------------------------------------------------------------
+-- CREAMOS LOS PERMISOS PARA QUE EDITE IMPARTE Y ADMINISTRAR LA INFORMACION.
+---------------------------------------------------------------------------------------------------------------
+GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE imparte TO coordinador;
+
+---------------------------------------------------------------------------------------------------------------
+-- CREAMOS LOS PERMISOS PARA QUE ADMINISTRE LIBROS Y AUTORES
+---------------------------------------------------------------------------------------------------------------
+GRANT SELECT, INSERT, UPDATE ON TABLE libros, autores TO coordinador;
+
+---------------------------------------------------------------------------------------------------------------
+-- CREAMOS LOS PERMISOS PARA QUE ADMINISTRE REFERENCIAS
+---------------------------------------------------------------------------------------------------------------
+GRANT SELECT, INSERT, UPDATE ON TABLE referencia TO coordinador;
+
+---------------------------------------------------------------------------------------------------------------
+-- CREAR VISTA PARA ADICIONAR, MODIFICAR Y BORRAR DE SOLO SU CARRERA
+---------------------------------------------------------------------------------------------------------------
+GRANT SELECT, UPDATE, DELETE ON editar_materias TO coordinador
+
+CREATE VIEW editar_materias AS
+SELECT asig.cod_a, asig.nom_a, asig.int_h, asig.creditos_a, im.grupo, im.horario 
+FROM asignaturas asig
+NATURAL JOIN carreras carr
+LEFT JOIN imparte im ON im.cod_a = asig.cod_a
+WHERE carr.id_p = current_user::integer;
+
+CREATE OR REPLACE FUNCTION insertar_editar_materias() RETURNS TRIGGER AS $$
+BEGIN
+    INSERT INTO asignaturas (cod_a, nom_a, int_h, creditos_a)
+    VALUES (NEW.cod_a, NEW.nom_a, NEW.int_h, NEW.creditos_a)
+    ON CONFLICT (cod_a) DO NOTHING;
+
+select * from inscribe_estudiantes
+    
+    INSERT INTO imparte (cod_a, grupo, horario)
+    VALUES (NEW.cod_a, NEW.grupo, NEW.horario)
+    ON CONFLICT (cod_a, grupo) DO NOTHING;
+    
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION actualizar_editar_materias() RETURNS TRIGGER AS $$
+BEGIN
+    UPDATE asignaturas
+    SET nom_a = NEW.nom_a, int_h = NEW.int_h, creditos_a = NEW.creditos_a
+    WHERE cod_a = OLD.cod_a;
+    
+    UPDATE imparte
+    SET grupo = NEW.grupo, horario = NEW.horario
+    WHERE cod_a = OLD.cod_a;
+    
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION borrar_editar_materias() RETURNS TRIGGER AS $$
+BEGIN
+    DELETE FROM imparte
+    WHERE cod_a = OLD.cod_a;
+    
+    DELETE FROM asignaturas
+    WHERE cod_a = OLD.cod_a;
+    
+    RETURN OLD;
+END;
+
+$$ LANGUAGE plpgsql;
+CREATE TRIGGER trigger_insertar_editar_materias
+INSTEAD OF INSERT ON editar_materias
+FOR EACH ROW
+EXECUTE FUNCTION insertar_editar_materias();
+
+CREATE TRIGGER trigger_actualizar_editar_materias
+INSTEAD OF UPDATE ON editar_materias
+FOR EACH ROW
+EXECUTE FUNCTION actualizar_editar_materias();
+
+CREATE TRIGGER trigger_borrar_editar_materias
+INSTEAD OF DELETE ON editar_materias
+FOR EACH ROW
+EXECUTE FUNCTION borrar_editar_materias();
