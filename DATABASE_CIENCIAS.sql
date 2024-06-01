@@ -103,7 +103,9 @@ UNION ALL
 SELECT * from licenciatura_educacion.estudiantes
 
 ---------------------------------------------------------------------------------------------------------------
--- FUNCIONES PREDEFINIDAS: SE CREA LA FUNCION SEND_TO_PRESTAMOS DEBIDO A QUE LA TABLA PRESTA SE ENCUENTRA
+-- FUNCIONES PREDEFINIDAS: 
+-- SE CREA LA FUNCION SEND_TO_PRESTAMOS DEBIDO A QUE LA TABLA PRESTA SE ENCUENTRA
+-- EN LA FACULTAD DE INGENIERIA, ADEMAS SE CREA LA FUNCION PARA VALIDAR EL ISBN DE UN LIBRO
 -- EN LA FACULTAD DE INGENIERIA
 ---------------------------------------------------------------------------------------------------------------
 
@@ -135,6 +137,35 @@ EXCEPTION
         RAISE EXCEPTION 'Error inserting into remote PRESTA table: %', SQLERRM;
 END;
 $$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION validate_referencia() RETURNS TRIGGER AS $$
+DECLARE
+    result_asignatura RECORD;
+    result_libro RECORD;
+BEGIN    
+    -- Verificar existencia en la tabla libros en el servidor remoto
+    SELECT * INTO result_libro FROM dblink(
+        'dbname=database_Ingenieria host=fac-ingenieriaa.c7u24qsquqpy.us-east-2.rds.amazonaws.com port=5432 user=ingresar_ingenieria password=ingresar_ingenieria',
+        format('SELECT isbn FROM escribe WHERE isbn = %L', NEW.isbn)
+    ) AS t1(isbn integer);
+
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'isbn % no existe', NEW.isbn;
+    END IF;
+    
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER trigger_validate_referencia
+BEFORE INSERT OR UPDATE ON public.referencia
+FOR EACH ROW EXECUTE FUNCTION validate_referencia();
+---------------------------------------------------------------------------------------------------------------
+-- CONFIGURACIÓN DE ROL PARA PERMITIR CONEXIONES DE OTROS SERVIDORES
+---------------------------------------------------------------------------------------------------------------
+CREATE ROLE ingresar_ciencias LOGIN PASSWORD 'ingresar_ciencias'
+ 
+GRANT SELECT ON TABLE estudiantes_ciencias TO ingresar_ciencias
 
 -- ROL ESTUDIANTE :
 ---------------------------------------------------------------------------------------------------------------
@@ -410,60 +441,278 @@ CREATE ROLE bibliotecario LOGIN PASSWORD 'bibliotecario';
 ---------------------------------------------------------------------------------------------------------------
 -- CREAMOS LA VISTA PARA QUE INSERTE, ACTUALICE Y ELIMINE LOS PRESTAMOS
 ---------------------------------------------------------------------------------------------------------------
+CREATE VIEW presta AS
 
-CREATE VIEW prestamos_bibliotecario AS
-SELECT * FROM presta
-GRANT USAGE ON SCHEMA public TO bibliotecario;
 
-GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE ejemplares TO bibliotecario;
+GRANT EXECUTE ON FUNCTION send_to_presta(BIGINT, BIGINT, INTEGER, DATE, DATE) TO bibliotecario;
 
-CREATE OR REPLACE FUNCTION bibliotecario_insert()
-RETURNS TRIGGER AS $$
+CREATE OR REPLACE FUNCTION update_to_presta(
+    p_cod_e BIGINT,
+    p_isbn BIGINT,
+    p_num_ej INTEGER,
+    p_fech_p DATE,
+    p_fech_d DATE
+)
+RETURNS VOID AS $$
+DECLARE
+    conn_str TEXT;
 BEGIN
-    INSERT INTO presta (cod_es, isbn, num_ej, fech_p, fech_d)
-    VALUES (NEW.cod_es, NEW.isbn, NEW.num_ej, NEW.fech_p, NEW.fech_d);
-    RETURN NEW;
+    -- Connection string to the remote database
+    conn_str := 'dbname=database_Ingenieria host=fac-ingenieriaa.c7u24qsquqpy.us-east-2.rds.amazonaws.com port=5432 user=bibliotecario password=bibliotecario';
+
+    -- Perform the update using dblink
+    PERFORM dblink(
+        conn_str,
+        format(
+            'UPDATE presta SET num_ej = %L, fech_p = %L, fech_d = %L WHERE cod_es = %L AND isbn = %L',
+            p_num_ej, p_fech_p, p_fech_d, p_cod_e, p_isbn
+        )
+    );
+
+EXCEPTION
+    WHEN OTHERS THEN
+        RAISE EXCEPTION 'Error updating remote PRESTA table: %', SQLERRM;
 END;
 $$ LANGUAGE plpgsql;
 
-CREATE OR REPLACE FUNCTION bibliotecario_update()
-RETURNS TRIGGER AS $$
+CREATE OR REPLACE FUNCTION delete_from_presta(
+    p_cod_e BIGINT,
+    p_isbn BIGINT,
+	p_fecha_p DATE
+)
+RETURNS VOID AS $$
+DECLARE
+    conn_str TEXT;
 BEGIN
-    UPDATE presta
-    SET cod_es = NEW.cod_es,
-        isbn = NEW.isbn,
-        num_ej = NEW.num_ej,
-        fech_p = NEW.fech_p,
-        fech_d = NEW.fech_d
-    WHERE cod_es = OLD.cod_es AND isbn = OLD.isbn AND num_ej = OLD.num_ej;
-    RETURN NEW;
+    -- Connection string to the remote database
+    conn_str := 'dbname=database_Ingenieria host=fac-ingenieriaa.c7u24qsquqpy.us-east-2.rds.amazonaws.com port=5432 user=bibliotecario password=bibliotecario';
+
+    -- Perform the delete using dblink
+    PERFORM dblink(
+        conn_str,
+        format(
+            'DELETE FROM presta WHERE cod_es = %L AND isbn = %L AND fech_p = %L',
+            p_cod_e, p_isbn, p_fecha_p
+        )
+    );
+
+EXCEPTION
+    WHEN OTHERS THEN
+        RAISE EXCEPTION 'Error deleting from remote PRESTA table: %', SQLERRM;
 END;
 $$ LANGUAGE plpgsql;
 
-CREATE OR REPLACE FUNCTION bibliotecario_delete()
-RETURNS TRIGGER AS $$
+
+GRANT EXECUTE ON FUNCTION update_to_presta (BIGINT, BIGINT, INTEGER, DATE, DATE) TO bibliotecario;
+GRANT EXECUTE ON FUNCTION delete_from_presta(BIGINT, BIGINT, DATE) TO bibliotecario;
+
+
+CREATE OR REPLACE FUNCTION select_from_presta()
+RETURNS SETOF RECORD AS $$
+DECLARE
+    conn_str TEXT;
+    result_set RECORD;
 BEGIN
-    DELETE FROM presta
-    WHERE cod_es = OLD.cod_es AND isbn = OLD.isbn AND num_ej = OLD.num_ej AND fech_p = OLD.fech_p;
-    RETURN OLD;
+    -- Connection string to the remote database
+    conn_str := 'dbname=database_Ingenieria host=fac-ingenieriaa.c7u24qsquqpy.us-east-2.rds.amazonaws.com port=5432 user=ingresar_ingenieria password=ingresar_ingenieria';
+
+    -- Perform the select using dblink
+    FOR result_set IN EXECUTE dblink(
+        conn_str,
+        'SELECT * FROM presta'
+    ) LOOP
+        RETURN NEXT result_set;
+    END LOOP;
+
+    RETURN;
+EXCEPTION
+    WHEN OTHERS THEN
+        RAISE EXCEPTION 'Error selecting from remote PRESTA table: %', SQLERRM;
 END;
 $$ LANGUAGE plpgsql;
 
-CREATE TRIGGER trigger_insert_presta
-INSTEAD OF INSERT ON prestamos_bibliotecario
-FOR EACH ROW
-EXECUTE FUNCTION bibliotecario_insert();
 
-CREATE TRIGGER trigger_update_presta
-INSTEAD OF UPDATE ON prestamos_bibliotecario
-FOR EACH ROW
-EXECUTE FUNCTION bibliotecario_update();
+CREATE VIEW presta AS
+SELECT * 
+		FROM dblink('dbname=database_Ingenieria host=fac-ingenieriaa.c7u24qsquqpy.us-east-2.rds.amazonaws.com port=5432 user=bibliotecario password=bibliotecario',
+				   'SELECT * FROM PRESTA')
+		AS tabla(cod_es bigint, isbn integer, num_ej integer, fech_p date, fech_d date)
 
-CREATE TRIGGER trigger_delete_presta
-INSTEAD OF DELETE ON prestamos_bibliotecario
-FOR EACH ROW
-EXECUTE FUNCTION bibliotecario_delete();
+GRANT SELECT ON TABLE presta TO bibliotecario
 
+---------------------------------------------------------------------------------------------------------------
+-- CREAMOS LA VISTA PARA QUE PUEDA ADMINISTRAR EJEMPLARES
+---------------------------------------------------------------------------------------------------------------
+
+CREATE OR REPLACE FUNCTION insert_into_ejemplares(
+    p_isbn INTEGER,
+    p_num_ej INTEGER
+)
+RETURNS VOID AS $$
+DECLARE
+    conn_str TEXT;
+BEGIN
+    -- Connection string to the remote database
+    conn_str := 'dbname=database_Ingenieria host=fac-ingenieriaa.c7u24qsquqpy.us-east-2.rds.amazonaws.com port=5432 user=bibliotecario password=bibliotecario';
+
+    -- Perform the insert using dblink
+    PERFORM dblink(
+        conn_str,
+        format(
+            'INSERT INTO ejemplares (isbn, num_ej) VALUES (%L, %L)',
+            p_isbn, p_num_ej
+        )
+    );
+
+EXCEPTION
+    WHEN OTHERS THEN
+        RAISE EXCEPTION 'Error inserting into remote EJEMPLARES table: %', SQLERRM;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION update_ejemplar(
+    p_isbn INTEGER,
+    p_num_ej INTEGER
+)
+RETURNS VOID AS $$
+DECLARE
+    conn_str TEXT;
+BEGIN
+    -- Connection string to the remote database
+    conn_str := 'dbname=database_Ingenieria host=fac-ingenieriaa.c7u24qsquqpy.us-east-2.rds.amazonaws.com port=5432 user=bibliotecario password=bibliotecario';
+
+    -- Perform the update using dblink
+    PERFORM dblink(
+        conn_str,
+        format(
+            'UPDATE ejemplares SET num_ej = %L WHERE isbn = %L',
+            p_num_ej, p_isbn
+        )
+    );
+
+EXCEPTION
+    WHEN OTHERS THEN
+        RAISE EXCEPTION 'Error updating remote EJEMPLARES table: %', SQLERRM;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION delete_from_ejemplares(
+    p_isbn INTEGER
+)
+RETURNS VOID AS $$
+DECLARE
+    conn_str TEXT;
+BEGIN
+    -- Connection string to the remote database
+    conn_str := 'dbname=database_Ingenieria host=fac-ingenieriaa.c7u24qsquqpy.us-east-2.rds.amazonaws.com port=5432 user=bibliotecario password=bibliotecario';
+
+    -- Perform the delete using dblink
+    PERFORM dblink(
+        conn_str,
+        format(
+            'DELETE FROM ejemplares WHERE isbn = %L',
+            p_isbn
+        )
+    );
+
+EXCEPTION
+    WHEN OTHERS THEN
+        RAISE EXCEPTION 'Error deleting from remote EJEMPLARES table: %', SQLERRM;
+END;
+$$ LANGUAGE plpgsql;
+
+GRANT EXECUTE ON FUNCTION insert_into_ejemplares(INTEGER,INTEGER) TO bibliotecario;
+GRANT EXECUTE ON FUNCTION update_ejemplar(INTEGER,INTEGER) TO bibliotecario;
+GRANT EXECUTE ON FUNCTION delete_from_ejemplares(INTEGER) TO bibliotecario;
+
+
+CREATE VIEW ejemplares AS
+SELECT * 
+		FROM dblink('dbname=database_Ingenieria host=fac-ingenieriaa.c7u24qsquqpy.us-east-2.rds.amazonaws.com port=5432 user=bibliotecario password=bibliotecario',
+				   'SELECT * FROM ejemplares')
+		AS tabla(num_ej integer, isbn integer)
+
+GRANT SELECT ON TABLE ejemplares TO bibliotecario
+
+---------------------------------------------------------------------------------------------------------------
+-- CREAMOS LA FUNCION PARA CUANDO SE INGRESEN AUTORES Y LIBROS
+---------------------------------------------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION insert_into_libros(
+    p_isbn BIGINT,
+    p_titulo VARCHAR(50),
+    p_edic INTEGER,
+    p_edit VARCHAR(50)
+)
+RETURNS VOID AS $$
+DECLARE
+    conn_str TEXT;
+BEGIN
+    -- Connection string to the remote database
+    conn_str := 'dbname=database_Ingenieria host=fac-ingenieriaa.c7u24qsquqpy.us-east-2.rds.amazonaws.com port=5432 user=bibliotecario password=bibliotecario';
+
+    -- Perform the insert using dblink
+    PERFORM dblink(
+        conn_str,
+        format(
+            'INSERT INTO libros (isbn, titulo, edic, edit) VALUES (%L, %L, %L, %L)',
+            p_isbn, p_titulo, p_edic, p_edit
+        )
+    );
+
+EXCEPTION
+    WHEN OTHERS THEN
+        RAISE EXCEPTION 'Error inserting into remote LIBROS table: %', SQLERRM;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION insert_into_autores(
+    p_id_a BIGINT,
+    p_nom_autor VARCHAR(70),
+    p_nacionalidad VARCHAR(50)
+)
+RETURNS VOID AS $$
+DECLARE
+    conn_str TEXT;
+BEGIN
+    -- Connection string to the remote database
+    conn_str := 'dbname=database_Ingenieria host=fac-ingenieriaa.c7u24qsquqpy.us-east-2.rds.amazonaws.com port=5432 user=bibliotecario password=bibliotecario';
+
+    -- Perform the insert using dblink
+    PERFORM dblink(
+        conn_str,
+        format(
+            'INSERT INTO autores (id_a, nom_autor, nacionalidad) VALUES (%L, %L, %L)',
+            p_id_a, p_nom_autor, p_nacionalidad
+        )
+    );
+
+EXCEPTION
+    WHEN OTHERS THEN
+        RAISE EXCEPTION 'Error inserting into remote AUTORES table: %', SQLERRM;
+END;
+$$ LANGUAGE plpgsql;
+
+GRANT EXECUTE ON FUNCTION insert_into_libros(BIGINT, VARCHAR(50), INTEGER, VARCHAR(50)) TO bibliotecario;
+SELECT insert_into_autores(2020,'auto','ven')
+GRANT EXECUTE ON FUNCTION insert_into_autores(BIGINT, VARCHAR(70), VARCHAR(70)) TO bibliotecario;
+
+
+
+CREATE VIEW libros AS
+SELECT * 
+FROM dblink('dbname=database_Ingenieria host=fac-ingenieriaa.c7u24qsquqpy.us-east-2.rds.amazonaws.com port=5432 user=bibliotecario password=bibliotecario',
+           'SELECT * FROM libros')
+AS tabla(isbn bigint, titulo varchar(50), edic integer, edit varchar(50));
+
+GRANT SELECT ON TABLE libros TO bibliotecario;
+
+CREATE VIEW autores AS
+SELECT * 
+FROM dblink('dbname=database_Ingenieria host=fac-ingenieriaa.c7u24qsquqpy.us-east-2.rds.amazonaws.com port=5432 user=bibliotecario password=bibliotecario',
+           'SELECT * FROM autores')
+AS tabla(id_a bigint, nom_autor varchar(70), nacionalidad varchar(50));
+
+GRANT SELECT ON TABLE autores TO bibliotecario;
 ---------------------------------------------------------------------------------------------------------------
 -- CREAMOS LA VISTA PARA QUE VEA EJEMPLARES:
 ---------------------------------------------------------------------------------------------------------------

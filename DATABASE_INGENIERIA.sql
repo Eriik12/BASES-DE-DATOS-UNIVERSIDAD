@@ -160,6 +160,13 @@ CREATE TRIGGER trigger_validate_estudiante
 BEFORE INSERT OR UPDATE ON public.presta
 FOR EACH ROW EXECUTE FUNCTION validate_estudiante();
 
+---------------------------------------------------------------------------------------------------------------
+-- CONFIGURACIÓN DE ROL PARA PERMITIR CONEXIONES DE OTROS SERVIDORES
+---------------------------------------------------------------------------------------------------------------
+CREATE ROLE ingresar_ingenieria LOGIN PASSWORD 'ingresar_ingenieria'
+
+GRANT SELECT, INSERT ON TABLE presta TO ingresar_ingenieria
+GRANT SELECT ON TABLE libros, escribe, autores TO ingresar_ingenieria
 
 -- ROL ESTUDIANTE :
 ---------------------------------------------------------------------------------------------------------------
@@ -416,68 +423,38 @@ GRANT SELECT, UPDATE ON TABLE profesores TO profesor;
 CREATE ROLE bibliotecario LOGIN PASSWORD 'bibliotecario';
 
 ---------------------------------------------------------------------------------------------------------------
--- CREAMOS LA VISTA PARA QUE INSERTE, ACTUALICE Y ELIMINE LOS PRESTAMOS
+-- DAMOS PERMISOS PARA QUE PUEDA EDITAR PRESTA
 ---------------------------------------------------------------------------------------------------------------
+GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE presta TO bibliotecario;
 
-CREATE VIEW prestamos_bibliotecario AS
-SELECT * FROM presta
-GRANT USAGE ON SCHEMA public TO bibliotecario;
-
+---------------------------------------------------------------------------------------------------------------
+-- DAMOS PERMISOS PARA QUE PUEDA EDITAR los ejemplares
+---------------------------------------------------------------------------------------------------------------
 GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE ejemplares TO bibliotecario;
 
-CREATE OR REPLACE FUNCTION bibliotecario_insert()
+---------------------------------------------------------------------------------------------------------------
+-- CREAMOS UN TRIGGER PARA CUANDO SE INGRESEN autores y libros
+---------------------------------------------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION update_presta_on_libros_autores_insert()
 RETURNS TRIGGER AS $$
 BEGIN
     INSERT INTO presta (cod_es, isbn, num_ej, fech_p, fech_d)
-    VALUES (NEW.cod_es, NEW.isbn, NEW.num_ej, NEW.fech_p, NEW.fech_d);
+    VALUES (NEW.isbn, NEW.isbn, 0, CURRENT_DATE, NULL);
     RETURN NEW;
 END;
 $$ LANGUAGE plpgsql;
 
-CREATE OR REPLACE FUNCTION bibliotecario_update()
-RETURNS TRIGGER AS $$
-BEGIN
-    UPDATE presta
-    SET cod_es = NEW.cod_es,
-        isbn = NEW.isbn,
-        num_ej = NEW.num_ej,
-        fech_p = NEW.fech_p,
-        fech_d = NEW.fech_d
-    WHERE cod_es = OLD.cod_es AND isbn = OLD.isbn AND num_ej = OLD.num_ej;
-    RETURN NEW;
-END;
-$$ LANGUAGE plpgsql;
-
-CREATE OR REPLACE FUNCTION bibliotecario_delete()
-RETURNS TRIGGER AS $$
-BEGIN
-    DELETE FROM presta
-    WHERE cod_es = OLD.cod_es AND isbn = OLD.isbn AND num_ej = OLD.num_ej AND fech_p = OLD.fech_p;
-    RETURN OLD;
-END;
-$$ LANGUAGE plpgsql;
-
-CREATE TRIGGER trigger_insert_presta
-INSTEAD OF INSERT ON prestamos_bibliotecario
+CREATE TRIGGER trigger_update_presta_on_libros_insert
+AFTER INSERT ON libros
 FOR EACH ROW
-EXECUTE FUNCTION bibliotecario_insert();
+EXECUTE FUNCTION update_presta_on_libros_autores_insert();
 
-CREATE TRIGGER trigger_update_presta
-INSTEAD OF UPDATE ON prestamos_bibliotecario
+CREATE TRIGGER trigger_update_presta_on_autores_insert
+AFTER INSERT ON autores
 FOR EACH ROW
-EXECUTE FUNCTION bibliotecario_update();
+EXECUTE FUNCTION update_presta_on_libros_autores_insert();
 
-CREATE TRIGGER trigger_delete_presta
-INSTEAD OF DELETE ON prestamos_bibliotecario
-FOR EACH ROW
-EXECUTE FUNCTION bibliotecario_delete();
-
----------------------------------------------------------------------------------------------------------------
--- CREAMOS LA VISTA PARA QUE VEA EJEMPLARES:
----------------------------------------------------------------------------------------------------------------
-GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE libros, escribe, autores TO bibliotecario;
-
-GRANT SELECT ON libros_autores TO bibliotecario;
+GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE presta, libros, autores TO bibliotecario;
 
 -- ROL COORDINADOR :
 ---------------------------------------------------------------------------------------------------------------
@@ -653,8 +630,6 @@ BEGIN
     VALUES (NEW.cod_a, NEW.nom_a, NEW.int_h, NEW.creditos_a)
     ON CONFLICT (cod_a) DO NOTHING;
 
-select * from inscribe_estudiantes
-    
     INSERT INTO imparte (cod_a, grupo, horario)
     VALUES (NEW.cod_a, NEW.grupo, NEW.horario)
     ON CONFLICT (cod_a, grupo) DO NOTHING;
